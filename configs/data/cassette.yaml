@@ -1,0 +1,8 @@
+# configs/data/cassette.yaml
+
+dataset:
+  name: cassette_dataset
+  data_dir: /mnt/disks/training-data-refine/fullTracks
+  batch_size: 32
+  num_workers: 8
+  pin_memory: True

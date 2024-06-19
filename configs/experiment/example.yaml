@@ -12,7 +12,7 @@ defaults:
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
-tags: ["mnist", "simple_dense_net"]
+tags: ["cassette", "simple_dense_net"]
 
 seed: 12345
 
@@ -36,6 +36,6 @@ data:
 logger:
   wandb:
     tags: ${tags}
-    group: "mnist"
+    group: "instruct-musicgen"
   aim:
-    experiment: "mnist"
+    experiment: "cassette"

@@ -1,8 +1,10 @@
-# configs/data/cassette.yaml
-
-dataset:
-  name: cassette_dataset
-  data_dir: /mnt/disks/training-data-refine/fullTracks
-  batch_size: 32
-  num_workers: 8
-  pin_memory: True
+_target_: src.data.CassetteDBDataModule
+cache_dir: ${paths.cache_dir}
+data_dir: ${paths.cassette_data_dir}
+batch_size: 8
+num_workers: 4
+pin_memory: False
+persistent_workers: True
+drop_last: False
+volume_normalization: True
+average: False

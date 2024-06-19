@@ -1,2 +1,3 @@
 from .moisesdb_datamodule import MoisesDBDataModule
 from .slakh_datamodule import SlakhDataModule
+from .cassette_datamodule import CassetteDBDataModule

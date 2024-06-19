@@ -43,7 +43,7 @@ train: True
 test: False
 
 # simply provide checkpoint path to resume training
-ckpt_path: /data2/yixiao/instruct-MusicGen/logs/train/runs/2024-04-22_20-25-42/checkpoints/last.ckpt
+ckpt_path: null
 
 # seed for random number generators in pytorch, numpy and python.random
 seed: null

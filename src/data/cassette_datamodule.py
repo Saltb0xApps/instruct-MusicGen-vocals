@@ -112,8 +112,8 @@ class CassetteDBDataModule(LightningDataModule):
 
 def stereo_to_mono(audio_data):
     if audio_data.ndim > 1 and audio_data.shape[1] == 2:  # Check if the audio is stereo
-        return np.mean(audio_data, axis=1, keepdims=True)  # Average the channels to create a mono signal with shape (N, 1)
-    return audio_data[:, None] if audio_data.ndim == 1 else audio_data  # Ensure mono audio has shape (N, 1)
+        return np.mean(audio_data, axis=1) 
+    return audio_data
     
 class CassetteDBInstructDataset(Dataset):
     def __init__(self, data_path: str,
@@ -125,7 +125,7 @@ class CassetteDBInstructDataset(Dataset):
                  average: bool = False):
         self.data_path = data_path
         self.sample_rate = sample_rate
-        self.files = [f for f in os.listdir(data_path) if f.endswith('.wav') and '-beat' not in f]
+        self.files = [f for f in os.listdir(data_path) if f.endswith('.wav') and '-beat' not in f and 'vocal' not in f]
         self.time_in_seconds = time_in_seconds
         self.stereo_to_mono = stereo_to_mono
         self.cache_dir = cache_dir
@@ -176,13 +176,10 @@ class CassetteDBInstructDataset(Dataset):
         vocals_data = stereo_to_mono(vocals_data)
         beat_data = stereo_to_mono(beat_data)
 
-        # Log detailed information about the data
-        print(f"{file_name}.wav shape: {vocals_data.shape}, length: {vocals_data.shape[0]}, Sample rate: {vocals_sr}")
-        print(f"{file_id}-beat_{file_chunk}.wav shape: {beat_data.shape}, length: {beat_data.shape[0]}, Sample rate: {beat_sr}")
-
         # Ensure both sample rates are the same, else raise an error
         if vocals_sr != beat_sr:
-            raise ValueError(f"Sample rates of vocals ({vocals_sr}) and beat ({beat_sr}) do not match for file {file_name}")
+            print(f"Sample rates do not match for {file_name}. Vocals: {vocals_sr}, Beat: {beat_sr}")
+            pass
 
         raw_data = {
             "stems": {
@@ -191,17 +188,10 @@ class CassetteDBInstructDataset(Dataset):
             },
             "sr": vocals_sr
         }
-        cache_file = os.path.join(self.cache_dir, f"{idx}.pt")
-
-        if os.path.exists(cache_file):
-            stems = torch.load(cache_file)  # stems = {'vocals': ..., 'bass': ...}
-        else:
-            stems = raw_data['stems']
-            torch.save(stems, cache_file)
+        stems = raw_data['stems']
 
         instruction = random.choice(self.instruct_set)
         target_stem_key = "vocals"
-        target_stem_mix = stems[target_stem_key]
 
         input_stems_mix, output_stems_mix, instruction_text = None, None, None
 
@@ -209,10 +199,10 @@ class CassetteDBInstructDataset(Dataset):
             instruction = assigned_instruction
 
         if instruction == 'add':
-            input_stems_keys = [stem for stem in stems.keys() if stem != target_stem_key]
-            output_stems_keys = [target_stem_key] + input_stems_keys
-            input_stems_mix = pad_and_mix([stems[stem] for stem in input_stems_keys])
-            output_stems_mix = pad_and_mix([stems[stem] for stem in output_stems_keys])
+            input_stems_keys = ["beat"] # All stems except the target stem, which is vocals
+            output_stems_keys = ["vocals"] # All stems including the target stem, which is vocals + all other stems
+            input_stems_mix = pad_and_mix([stems[stem] for stem in input_stems_keys]) # Mix all stems except the target stem
+            output_stems_mix = pad_and_mix([stems[stem] for stem in output_stems_keys]) # Mix all stems including the target stem
 
             with open(json_file, 'r') as f:
                 json_data = json.load(f)
@@ -224,35 +214,42 @@ class CassetteDBInstructDataset(Dataset):
             input_stems_mix = resampy.resample(input_stems_mix, raw_data['sr'], self.sample_rate, filter='kaiser_fast')
             output_stems_mix = resampy.resample(output_stems_mix, raw_data['sr'], self.sample_rate, filter='kaiser_fast')
 
-        if self.time_in_seconds is not None:
-            num_samples = self.sample_rate * self.time_in_seconds
-            min_length = min(input_stems_mix.shape[0], output_stems_mix.shape[0])
-            if min_length < num_samples:
-                raise ValueError(f"The minimum length of stems {min_length} is shorter than the required {num_samples} samples for file {file_name}")
+        try:
+            if self.time_in_seconds is not None:
+                num_samples = self.sample_rate * self.time_in_seconds
+                min_length = min(input_stems_mix.shape[0], output_stems_mix.shape[0])
+                if min_length < num_samples:
+                    print(f"The minimum length of stems {min_length} is shorter than the required {num_samples} samples for file {file_name}")
+                    pass
+                if min_length == num_samples:
+                    offset = 0
+                else:
+                    offset = random.randint(0, min_length - num_samples)
+                input_stems_mix = input_stems_mix[offset:offset + num_samples]
+                output_stems_mix = output_stems_mix[offset:offset + num_samples]
 
-            offset = random.randint(0, min_length - num_samples)
-            input_stems_mix = input_stems_mix[offset:offset + num_samples]
-            output_stems_mix = output_stems_mix[offset:offset + num_samples]
+            # if (np.max(np.abs(input_stems_mix)) < 0.1
+            #     or np.max(np.abs(output_stems_mix)) < 0.1
+            #     or np.max(np.abs(target_stem_mix)) < 0.1
+            # ):
+            #     if retry_count < 10:
+            #         return self.__getitem__(idx, retry_count + 1, assigned_instruction=instruction, return_json=return_json)
+            #     else:
+            #         print(f"Retry count exceeds 10 times for {idx}. File: {file_name}")
+            #         pass
 
-        # if (np.max(np.abs(input_stems_mix)) < 0.1
-        #     or np.max(np.abs(output_stems_mix)) < 0.1
-        #     or np.max(np.abs(target_stem_mix)) < 0.1
-        # ):
-        #     if retry_count < 10:
-        #         return self.__getitem__(idx, retry_count + 1, assigned_instruction=instruction, return_json=return_json)
-        #     else:
-        #         print(f"Retry count exceeds 10 times for {idx}. File: {file_name}")
-        #         pass
+            if self.volume_normalization:
+                if instruction == 'add':
+                    input_stems_mix *= (len(stems) / len(output_stems_keys))
+                    output_stems_mix *= (len(stems) / len(output_stems_keys))
 
-        if self.volume_normalization:
-            if instruction == 'add':
-                input_stems_mix *= (len(stems) / len(output_stems_keys))
-                output_stems_mix *= (len(stems) / len(output_stems_keys))
-
-            max_volume = max(np.max(np.abs(input_stems_mix)), np.max(np.abs(output_stems_mix)))
-            if max_volume > 1.0:
-                input_stems_mix /= max_volume
-                output_stems_mix /= max_volume
+                max_volume = max(np.max(np.abs(input_stems_mix)), np.max(np.abs(output_stems_mix)))
+                if max_volume > 1.0:
+                    input_stems_mix /= max_volume
+                    output_stems_mix /= max_volume
+        except Exception as e:
+            print(f"e = {e}, Error processing {idx}. File: {file_name}")
+            pass    
 
         if return_json:
             instruction_json = {
@@ -260,7 +257,7 @@ class CassetteDBInstructDataset(Dataset):
                 "input_stems_list": input_stems_keys,
             }
             return input_stems_mix, output_stems_mix, instruction_json
-
+        
         return input_stems_mix, output_stems_mix, instruction_text
 
 

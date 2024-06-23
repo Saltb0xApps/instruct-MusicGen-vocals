@@ -20,7 +20,7 @@ class MoisesDBDataModule(LightningDataModule):
     def __init__(
         self,
         cache_dir: str,
-        data_dir: str = "/home/yixiao/instruct-MusicGen/data/moisesdb/",
+        data_dir: str = "/mnt/disks/training-data-refine/moisesDB/moisesdb/",
         batch_size: int = 4,
         num_workers: int = 0,
         pin_memory: bool = False,
@@ -321,7 +321,7 @@ class MoisesDBInstructDataset(Dataset):
 
 
     def get_test_files(self):
-        root_folder = '/data2/yixiao/test_data/moisesDB/'
+        root_folder = '/mnt/disks/training-data-refine/moisesDB/moisesdb/'
 
         def process_file(idx, instruction):
             input_stems_mix, output_stems_mix, instruction_json = self.__getitem__(idx, assigned_instruction=instruction, return_json=True)

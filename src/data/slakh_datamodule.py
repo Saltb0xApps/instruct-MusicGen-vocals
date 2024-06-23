@@ -163,17 +163,18 @@ class SlakhInstructDataset(Dataset):
         self.data_path = data_path
         self.sample_rate = sample_rate
         self.data = mirdata.initialize('slakh', data_home=data_path)
+        
         self.indexes = self.data.get_mtrack_splits()[split]  # ['Track00001'~'Track02100']
         self.volume_normalization = volume_normalization
         self.average = average
         self.split = split
 
         self.instruct_set = [
-            # 'generate',  # only output target stem
+            'generate',  # only output target stem
             'add',       # output target stem + input mix
             # 'drum_condition',
             'remove',    # output input mix - target stem
-            # 'repeat',    # output input mix
+            'repeat',    # output input mix
             'extract',   # output target stem
             # 'replace',   # output target stem + input mix - replaced stem
             # 'remix'      # output new mix with target stem
@@ -424,6 +425,8 @@ class SlakhInstructDataset(Dataset):
                     "input_stems_list": input_stems_keys_text,
                 }
                 return input_stems_mix, output_stems_mix, instruction_json
+
+            print(f"returning values for {idx} which are {input_stems_mix.shape} and {output_stems_mix.shape} and instruction {instruction_text}")
 
             return input_stems_mix, output_stems_mix, instruction_text
 

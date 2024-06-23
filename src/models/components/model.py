@@ -222,7 +222,7 @@ class CPTransformerLayer(nn.Module):
 
 
 class CPTransformer(nn.Module):
-    def __init__(self, model, emb_fn, start_layer, latent_dim, autocast, stride=50 * 10):
+    def __init__(self, model, emb_fn, start_layer, latent_dim, autocast, stride=50 * 30):
         super().__init__()
 
         self.emb_fn = {
@@ -234,7 +234,7 @@ class CPTransformer(nn.Module):
         hidden_dim = 2048
         cond_dim = latent_dim
         num_layers = len(model.layers) - start_layer
-        max_n_frames = 500
+        max_n_frames = 1500
 
         self.pos_emb = nn.Parameter(
             torch.randn(num_layers + 1, max_n_frames + 1, hidden_dim),
@@ -365,7 +365,7 @@ class Instructor(nn.Module):
                                                 r=32,
                                                 lora_alpha=64)
 
-        # self.peft_model.lm.transformer = peft.get_peft_model(self.peft_model.lm.transformer, self.text_lora_config)
+        self.peft_model.lm.transformer = peft.get_peft_model(self.peft_model.lm.transformer, self.text_lora_config)
 
     def set_training(self):
         self.peft_model.set_training()

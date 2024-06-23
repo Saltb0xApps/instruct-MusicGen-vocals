@@ -44,7 +44,7 @@ class MusicGen:
         self.max_duration = max_duration
         self.device = next(iter(lm.parameters())).device
         self.generation_params: dict = {}
-        self.set_generation_params(duration=15)  # 15 seconds by default
+        self.set_generation_params(duration=30)  # 15 seconds by default
         self._progress_callback: tp.Optional[tp.Callable[[int, int], None]] = None
         print("load....musicgen bk")
         if self.device.type == 'cpu':

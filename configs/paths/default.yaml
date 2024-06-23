@@ -5,13 +5,13 @@ root_dir: ${oc.env:PROJECT_ROOT}
 
 # path to data directory
 #data_dir: ${paths.root_dir}/data/
-data_dir: /mnt/disks/training-data-refine/moisesDB/moisesdb/moisesdb_v0.1/
+data_dir: /mnt/disks/training-data-refine/moisesDB/moisesdb/
 slakh_data_dir: /mnt/disks/training-data-refine/slakh/
 cassette_data_dir: /mnt/disks/training-data-refine/fullTracks/
 
 # path to logging directory
 #log_dir: ${paths.root_dir}/logs/
-log_dir: /home/akhil/instruct-MusicGen/logs/
+log_dir: /home/akhil/instruct-MusicGen2/logs/
 
 # path to output directory, created dynamically by hydra
 # path generation pattern is specified in `configs/hydra/default.yaml`
@@ -21,7 +21,7 @@ output_dir: ${hydra:runtime.output_dir}
 # path to working directory
 work_dir: ${hydra:runtime.cwd}
 
-tmp_dir: /tmp/musicgen/
+tmp_dir: /tmp/musicgen2
 
-cache_dir: /home/akhil/cache/
+cache_dir: /home/akhil/cache2/
 

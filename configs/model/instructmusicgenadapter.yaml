@@ -30,7 +30,7 @@ compile: false
 instructor:
   _target_: src.models.components.model.Instructor
   _partial_: true
-  sec: 5
+  sec: 30
   num_layers: 48
   latent_dim: 2048
   top_k: 100

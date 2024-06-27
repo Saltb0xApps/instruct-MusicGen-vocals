@@ -361,9 +361,14 @@ class Instructor(nn.Module):
                                             start_layer=48 - num_layers,
                                             latent_dim=latent_dim,
                                             autocast=self.musicgen.autocast)
-        self.text_lora_config = peft.LoraConfig(target_modules=r".*\.cross_attention\.(q_proj|v_proj)",
-                                                r=32,
-                                                lora_alpha=64)
+        self.text_lora_config = peft.LoraConfig(r=128,
+                                                lora_alpha=256,  # Increased alpha for stronger influence
+                                                target_modules=[
+                                                    ".*self_attn.(q_proj|k_proj|v_proj|o_proj)",
+                                                    ".*cross_attention.(q_proj|k_proj|v_proj|o_proj)",
+                                                ],  # Target both self-attention and cross-attention
+                                                lora_dropout=0.05,  # Slight dropout for regularization
+                                            )
 
         self.peft_model.lm.transformer = peft.get_peft_model(self.peft_model.lm.transformer, self.text_lora_config)
 

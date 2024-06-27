@@ -183,8 +183,8 @@ class CassetteDBInstructDataset(Dataset):
 
         raw_data = {
             "stems": {
-                "vocals": vocals_data,
-                "beat": beat_data,
+                "vocals": vocals_data, # this is the instrumental + vocals track
+                "beat": beat_data, # this is the instrumental track
             },
             "sr": vocals_sr
         }

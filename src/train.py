@@ -8,6 +8,8 @@ import torch
 from lightning import Callback, LightningDataModule, LightningModule, Trainer
 from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig
+from lightning.pytorch.strategies import DDPStrategy
+from lightning.pytorch.plugins import DDPPlugin
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 # ------------------------------------------------------------------------------------ #
@@ -40,7 +42,7 @@ from src.utils import (
 log = RankedLogger(__name__, rank_zero_only=True)
 
 torch.set_float32_matmul_precision('medium')
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
@@ -59,11 +61,14 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     log.info(f"Instantiating datamodule <{cfg.data._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)
 
     log.info(f"Instantiating model <{cfg.model._target_}>")
     model: LightningModule = hydra.utils.instantiate(cfg.model)
+    model = model.to(device)
 
     log.info("Instantiating callbacks...")
     callbacks: List[Callback] = instantiate_callbacks(cfg.get("callbacks"))
@@ -72,8 +77,18 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     logger: List[Logger] = instantiate_loggers(cfg.get("logger"))
 
     log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=logger)
+    # Configure DDP strategy
+    ddp_strategy = DDPStrategy(
+        find_unused_parameters=False,
+        gradient_as_bucket_view=True,
+    )
 
+    trainer: Trainer = hydra.utils.instantiate(
+        cfg.trainer,
+        callbacks=callbacks,
+        logger=logger,
+        strategy=ddp_strategy,
+    )
     object_dict = {
         "cfg": cfg,
         "datamodule": datamodule,

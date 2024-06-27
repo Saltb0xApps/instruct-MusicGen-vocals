@@ -30,6 +30,7 @@ class InstructMusicGenAdapterLitModule(LightningModule):
         self.save_hyperparameters(logger=False)
 
         self.model = self.hparams.instructor()
+        self.model = self.model.to(self.device)
 
         self.criterion_1 = CrossEntropyLoss()
         self.criterion_2 = L1Loss()
@@ -57,9 +58,11 @@ class InstructMusicGenAdapterLitModule(LightningModule):
 
 
     def forward(self, batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
         input_stems_mix, output_stems_mix, instruction_text = batch
 
+        # Move tensors to the correct device
+        input_stems_mix = input_stems_mix.to(self.device)
+        output_stems_mix = output_stems_mix.to(self.device)
 
         # if isinstance(input_stems_mix, torch.Tensor):
         #     input_stems_mix_np = input_stems_mix.detach().cpu().numpy()
@@ -324,10 +327,19 @@ class InstructMusicGenAdapterLitModule(LightningModule):
 
         :return: A dict containing the configured optimizers and learning-rate schedulers to be used for training.
         """
+
         optimizer = self.hparams.optimizer(params=self.trainer.model.parameters())
+        
+        
+        # Ensure optimizer and scheduler are on the correct device
+        for param_group in optimizer.param_groups:
+            for param in param_group['params']:
+                param.data = param.data.to(self.device)
+
         # MAGIC
         if self.hparams.scheduler is not None:
             scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=100, num_training_steps=10000)
+            scheduler = scheduler.to(self.device)
             # scheduler = self.hparams.scheduler(optimizer=optimizer)
             return {
                 "optimizer": optimizer,

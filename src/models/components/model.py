@@ -372,14 +372,16 @@ class Instructor(nn.Module):
             latent_dim: int, dimension of the latent space
         '''
         super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         lm = CondMusicgen(sec, top_k=top_k)
-        self.peft_model = lm
-        self.musicgen = lm.musicgen
+        self.peft_model = lm.to(self.device)
+        self.musicgen = lm.musicgen.to(self.device)
         self.cp_transformer = CPTransformer(self.musicgen.lm.transformer,
                                             emb_fn=self.musicgen.lm.emb,
                                             start_layer=48 - num_layers,
                                             latent_dim=latent_dim,
-                                            autocast=self.musicgen.autocast)
+                                            autocast=self.musicgen.autocast).to(self.device)
         self.text_lora_config = peft.LoraConfig(r=128,
                                                 lora_alpha=256,  # Increased alpha for stronger influence
                                                 target_modules=[
@@ -414,7 +416,12 @@ class Instructor(nn.Module):
             max_n_frames = input_code.shape[-1]
 
         condition_audio_code = torch.cat([condition_audio_code, torch.ones_like(condition_audio_code[:,:, 0:1]) * 2048], dim=-1)
-
+        
+        input_code = input_code.to(self.device)
+        condition_audio_code = condition_audio_code.to(self.device)
+        if prompt_tokens is not None:
+            prompt_tokens = prompt_tokens.to(self.device)
+        
         # Split instruction and lyrics
         instruction_parts = [text.split("Lyrics:", 1) for text in text_description]
         instructions = [parts[0].strip() for parts in instruction_parts]

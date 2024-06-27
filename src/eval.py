@@ -38,7 +38,7 @@ import torch
 import os
 
 torch.set_float32_matmul_precision('medium')
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 

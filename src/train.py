@@ -40,7 +40,7 @@ from src.utils import (
 log = RankedLogger(__name__, rank_zero_only=True)
 
 torch.set_float32_matmul_precision('medium')
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 

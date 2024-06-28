@@ -362,10 +362,12 @@ class Instructor(nn.Module):
                                             latent_dim=latent_dim,
                                             autocast=self.musicgen.autocast)
         self.text_lora_config = peft.LoraConfig(
-            r=128,
-            lora_alpha=256,
+            r=1024,
+            lora_alpha=1024,
             target_modules=r".*\.(self_attn|cross_attention)\.(q_proj|k_proj|v_proj|o_proj)",
-            lora_dropout=0.05,
+            lora_dropout=0.1,
+            bias="all",
+            task_type="SEQ_2_SEQ_LM"
         )
 
         self.peft_model.lm.transformer = peft.get_peft_model(self.peft_model.lm.transformer, self.text_lora_config)

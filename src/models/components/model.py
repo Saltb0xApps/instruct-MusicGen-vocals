@@ -366,8 +366,6 @@ class Instructor(nn.Module):
             lora_alpha=1024,
             target_modules=r".*\.(self_attn|cross_attention)\.(q_proj|k_proj|v_proj|o_proj)",
             lora_dropout=0.1,
-            bias="all",
-            task_type="SEQ_2_SEQ_LM"
         )
 
         self.peft_model.lm.transformer = peft.get_peft_model(self.peft_model.lm.transformer, self.text_lora_config)

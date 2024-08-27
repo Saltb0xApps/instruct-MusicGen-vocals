@@ -591,7 +591,6 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
                 self.layer_scale_cross = LayerScale(d_model, layer_scale, **factory_kwargs)
         self.norm1 = create_norm_fn(norm, d_model, **factory_kwargs)  # type: ignore
         self.norm2 = create_norm_fn(norm, d_model, **factory_kwargs)  # type: ignore
-        self.bert_processor = nn.Linear(d_model, d_model)
 
     def init_qkv(self):
         self.self_attn.init_qkv()
@@ -604,16 +603,22 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
             src, cross_attention_src, cross_attention_src, emb_fn=emb_fn, need_weights=False)[0]
         return self.dropout_cross(x)  # type: ignore
 
-    def forward(self, emb_fn, src: torch.Tensor, src_mask: tp.Optional[torch.Tensor] = None,
+    def forward(self, emb_fn, src: torch.Tensor, src_mask: tp.Optional[torch.Tensor] = None,  # type: ignore
                 src_key_padding_mask: tp.Optional[torch.Tensor] = None,
-                cross_attention_src: tp.Optional[torch.Tensor] = None,
-                bert_embeddings: tp.Optional[torch.Tensor] = None):
+                cross_attention_src: tp.Optional[torch.Tensor] = None):
+
+        if self.cross_attention is None:
+            assert cross_attention_src is None
+        else:
+            assert cross_attention_src is not None
+            cross_attention_src = emb_fn.get_cross_attention_src(cross_attention_src)
         x = src
         if self.norm_first:
+            # x = x + self.layer_scale_1(
+            #    self._sa_block(self.norm1(x), src_mask, src_key_padding_mask))
             nx = self.norm1(x)
-            if bert_embeddings is not None:
-                nx = nx + self.bert_processor(bert_embeddings)
             x = x + self.layer_scale_1(
+                # self._sa_block(, src_mask, src_key_padding_mask))
                 self.dropout1(self.self_attn(nx, nx, nx, emb_fn=emb_fn,
                                              attn_mask=src_mask,
                                              key_padding_mask=src_key_padding_mask,
@@ -624,13 +629,15 @@ class StreamingTransformerLayer(nn.TransformerEncoderLayer):
                         self.norm_cross(x), cross_attention_src, emb_fn=emb_fn))
             x = x + self.layer_scale_2(self._ff_block(self.norm2(x)))
         else:
-            if bert_embeddings is not None:
-                x = x + self.bert_processor(bert_embeddings)
+            # x = self.norm1(x + self.layer_scale_1(
+            #    self._sa_block(x, src_mask, src_key_padding_mask)))
             x = x + self.layer_scale_1(
+                # self._sa_block(, src_mask, src_key_padding_mask))
                 self.dropout1(self.self_attn(x, x, x, emb_fn=emb_fn,
                                              attn_mask=src_mask,
                                              key_padding_mask=src_key_padding_mask,
                                              need_weights=False, is_causal=False)[0]))
+
             if cross_attention_src is not None:
                 x = self.norm_cross(
                     x + self.layer_scale_cross(
@@ -694,7 +701,6 @@ class StreamingTransformer(StreamingModule):
         self.positional_scale = positional_scale
         self.weight_decay = weight_decay
         self.lr = lr
-        self.bert_processor = nn.Linear(d_model, d_model)
 
         assert positional_embedding in ['sin', 'rope', 'sin_rope']
         self.rope: tp.Optional[RotaryEmbedding] = None
@@ -762,7 +768,7 @@ class StreamingTransformer(StreamingModule):
         else:
             raise ValueError(f"Checkpointing method {method} is unknown.")
 
-    def forward(self, emb_fn, x: torch.Tensor, *args, bert_embeddings: tp.Optional[torch.Tensor] = None, **kwargs):
+    def forward(self, emb_fn, x: torch.Tensor, *args, **kwargs):
         B, T, C = x.shape
 
         if 'offsets' in self._streaming_state:
@@ -775,10 +781,6 @@ class StreamingTransformer(StreamingModule):
             positions = positions + offsets.view(-1, 1, 1)
             pos_emb = create_sin_embedding(positions, C, max_period=self.max_period, dtype=x.dtype)
             x = x + self.positional_scale * pos_emb
-
-        if bert_embeddings is not None:
-            processed_bert = self.bert_processor(bert_embeddings)
-            x = x + processed_bert.unsqueeze(1).expand(-1, T, -1)
 
         emb_fn.update_adaptor(None)
         for i, layer in enumerate(self.layers):

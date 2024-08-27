@@ -174,7 +174,6 @@ class LMModel(StreamingModule):
         self.linears = nn.ModuleList([nn.Linear(dim, self.card, bias=bias_proj) for _ in range(n_q)])
         self._init_weights(weight_init, depthwise_init, zero_bias_init)
         self._fsdp: tp.Optional[nn.Module]
-        self.bert_fusion = nn.Linear(dim * 2, dim)
         self.__dict__['_fsdp'] = None
 
     def init_qkv(self):
@@ -224,8 +223,7 @@ class LMModel(StreamingModule):
 
     def forward(self, emb_fn, sequence: torch.Tensor,
                 conditions: tp.List[ConditioningAttributes],
-                condition_tensors: tp.Optional[ConditionTensors] = None,
-                fused_embeddings: tp.Optional[torch.Tensor] = None) -> torch.Tensor:
+                condition_tensors: tp.Optional[ConditionTensors] = None) -> torch.Tensor:
         """Apply language model on sequence and conditions.
         Given a tensor of sequence of shape [B, K, S] with K the number of codebooks and
         S the sequence steps, return the logits with shape [B, card, K, S].
@@ -243,10 +241,6 @@ class LMModel(StreamingModule):
         B, K, S = sequence.shape
         assert K == self.num_codebooks, 'Sequence shape must match the specified number of codebooks'
         input_ = sum([self.emb[k](sequence[:, k]) for k in range(K)])
-
-        if fused_embeddings is not None:
-            input_ = self.bert_fusion(torch.cat([input_, fused_embeddings], dim=-1))
-
         if condition_tensors is None:
             assert not self._is_streaming, "Conditions tensors should be precomputed when streaming."
             # apply dropout modules
@@ -329,8 +323,7 @@ class LMModel(StreamingModule):
                            top_k: int = 0,
                            top_p: float = 0.0,
                            cfg_coef: tp.Optional[float] = None,
-                           rng=None,
-                           fused_embeddings: tp.Optional[torch.Tensor] = None) -> torch.Tensor:
+                           rng=None) -> torch.Tensor:
         """Sample next token from the model given a sequence and a set of conditions. The model supports
         multiple sampling strategies (greedy sampling, softmax, top-k, top-p...).
 
@@ -353,24 +346,23 @@ class LMModel(StreamingModule):
         model = self if self._fsdp is None else self._fsdp
         if self.two_step_cfg and cfg_conditions != {}:
             assert isinstance(cfg_conditions, tuple)
-            condition_tensors, null_condition_tensors, cond_bert, null_cond_bert = cfg_conditions
-            cond_logits = model(emb_fn, sequence, conditions=[], condition_tensors=condition_tensors, fused_embeddings=cond_bert)
+            condition_tensors, null_condition_tensors = cfg_conditions
+            cond_logits = model(emb_fn, sequence, conditions=[], condition_tensors=condition_tensors)
             state = self.get_streaming_state()
             self.set_streaming_state(unconditional_state)
-            uncond_logits = model(emb_fn, sequence, conditions=[], condition_tensors=null_condition_tensors, fused_embeddings=null_cond_bert)
+            uncond_logits = model(emb_fn, sequence, conditions=[], condition_tensors=null_condition_tensors)
             unconditional_state.update(self.get_streaming_state())
             self.set_streaming_state(state)
             logits = uncond_logits + (cond_logits - uncond_logits) * self.cfg_coef
         else:
-            assert isinstance(cfg_conditions, tuple)
-            condition_tensors, bert_embeddings = cfg_conditions
+            assert isinstance(cfg_conditions, dict)
+            condition_tensors = cfg_conditions
             if condition_tensors:
                 # Preparing for CFG, predicting both conditional and unconditional logits.
                 sequence = torch.cat([sequence, sequence], dim=0)
-                bert_embeddings = torch.cat([bert_embeddings, bert_embeddings], dim=0)
             all_logits = model(
                 emb_fn, sequence,
-                conditions=[], condition_tensors=condition_tensors, fused_embeddings=bert_embeddings)
+                conditions=[], condition_tensors=condition_tensors)
             if condition_tensors:
                 cond_logits, uncond_logits = all_logits.split(B, dim=0)  # [B, K, T, card]
                 logits = uncond_logits + (cond_logits - uncond_logits) * cfg_coef
@@ -401,9 +393,10 @@ class LMModel(StreamingModule):
         print("lm_bk, here")
 
     @torch.no_grad()
-    def generate(self, embed_fn, prompt: tp.Optional[torch.Tensor] = None,
+    def generate(self,
+                 embed_fn,
+                 prompt: tp.Optional[torch.Tensor] = None,
                  conditions: tp.List[ConditioningAttributes] = [],
-                 fused_embeddings: tp.Optional[torch.Tensor] = None,
                  num_samples: tp.Optional[int] = None,
                  max_gen_len: int = 256,
                  use_sampling: bool = True,
@@ -514,8 +507,7 @@ class LMModel(StreamingModule):
                 next_token = self._sample_next_token(embed_fn,
                                                      curr_sequence, cfg_conditions, unconditional_state, use_sampling,
                                                      temp, top_k, top_p,
-                                                     cfg_coef=cfg_coef, rng=prev_offset,
-                                                     fused_embeddings=fused_embeddings)
+                                                     cfg_coef=cfg_coef, rng=prev_offset)
                 # ensure the tokens that should be masked are properly set to special_token_id
                 # as the model never output special_token_id
                 valid_mask = mask[..., offset:offset + 1].expand(B, -1, -1)

@@ -208,7 +208,7 @@ class CassetteDBInstructDataset(Dataset):
                 json_data = json.load(f)
                 lyrics = json_data['lyrics']
 
-            instruction_text = f"Music piece. Instruction: Add {target_stem_key}. Lyrics: {lyrics}"
+            instruction_text = f"Music piece. Instruction: Add {target_stem_key} with lyrics: {lyrics}"
 
         if raw_data['sr'] != self.sample_rate:
             input_stems_mix = resampy.resample(input_stems_mix, raw_data['sr'], self.sample_rate, filter='kaiser_fast')
@@ -255,7 +255,6 @@ class CassetteDBInstructDataset(Dataset):
             instruction_json = {
                 "instruction_text": instruction_text,
                 "input_stems_list": input_stems_keys,
-                "lyrics": lyrics  # Add this line to include raw lyrics
             }
             return input_stems_mix, output_stems_mix, instruction_json
         

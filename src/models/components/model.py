@@ -1,7 +1,5 @@
 import torch
 from torch import nn
-
-from src.audiocraft.modules.conditioners import ConditioningAttributes
 from .musicgen_cc import MusicGen
 from .utilities.model_utils import freeze, print_trainable_parameters
 import peft
@@ -25,64 +23,51 @@ class CondMusicgen(nn.Module):
         self.lm = mg.lm
         self.max_duration = sec
         self.frame_rate = 50
+        # Add a layer to fuse BERT embeddings with other embeddings
+        self.bert_fusion = nn.Linear(self.lm.dim * 2, self.lm.dim)
+
 
     def set_training(self):
         self.lm.train()
 
-    def forward(self, input_code, text_description, embed_fn, lyrics_encoding, num_samples=1, mode="train",
+    def forward(self, input_code, text_description, embed_fn, bert_embeddings, num_samples=1, mode="train",
                 total_gen_len=None, prompt_tokens=None):
         mg = self.musicgen
         lm = self.lm
 
         if mode == "train":
             with mg.autocast:
-                if isinstance(text_description[0], str):
-                    conditions = [ConditioningAttributes(text={'description': desc}) for desc in text_description]
-                else:
-                    conditions = text_description
-
+                # Fuse BERT embeddings with the existing embeddings
+                fused_embeddings = self.bert_fusion(torch.cat([embed_fn.adaptor, bert_embeddings.unsqueeze(1).expand(-1, embed_fn.adaptor.size(1), -1)], dim=-1))
+                
                 out = lm.compute_predictions(codes=input_code,
                                              embed_fn=embed_fn,
-                                             conditions=conditions,
-                                             lyrics_encoding=lyrics_encoding)
+                                             conditions=text_description,
+                                             fused_embeddings=fused_embeddings)
             return out
         elif mode == "inference":
             if total_gen_len is None:
                 total_gen_len = int(mg.duration * mg.frame_rate)
 
             with mg.autocast:
-                if isinstance(text_description[0], str):
-                    conditions = [ConditioningAttributes(text={'description': desc}) for desc in text_description]
-                else:
-                    conditions = text_description
-                
-                gen_tokens = lm.generate(embed_fn=embed_fn, 
-                                         num_samples=num_samples,
-                                         prompt=None, 
-                                         conditions=conditions,
-                                         lyrics_encoding=lyrics_encoding,
-                                         callback=None, 
-                                         max_gen_len=total_gen_len,
+                fused_embeddings = self.bert_fusion(torch.cat([embed_fn.adaptor, bert_embeddings.unsqueeze(1).expand(-1, embed_fn.adaptor.size(1), -1)], dim=-1))
+                gen_tokens = lm.generate(embed_fn=embed_fn, num_samples=num_samples,
+                                         prompt=None, conditions=text_description,
+                                         fused_embeddings=fused_embeddings,
+                                         callback=None, max_gen_len=total_gen_len,
                                          **mg.generation_params)
                 return gen_tokens
         elif mode == "continuation":
             with mg.autocast:
-                if isinstance(text_description[0], str):
-                    conditions = [ConditioningAttributes(text={'description': desc}) for desc in text_description]
-                else:
-                    conditions = text_description
-                
-                gen_tokens = lm.generate(embed_fn=embed_fn, 
-                                         num_samples=num_samples,
-                                         prompt=prompt_tokens, 
-                                         conditions=conditions,
-                                         lyrics_encoding=lyrics_encoding,
-                                         callback=None, 
-                                         max_gen_len=total_gen_len, 
-                                         **mg.generation_params)
+                fused_embeddings = self.bert_fusion(torch.cat([embed_fn.adaptor, bert_embeddings.unsqueeze(1).expand(-1, embed_fn.adaptor.size(1), -1)], dim=-1))
+                gen_tokens = lm.generate(embed_fn=embed_fn, num_samples=num_samples,
+                                         prompt=prompt_tokens, conditions=text_description,
+                                         fused_embeddings=fused_embeddings,
+                                         callback=None, max_gen_len=total_gen_len, **mg.generation_params)
                 return gen_tokens
 
-    def generate(self, cp_fn, text_description, condition_audio_code, lyrics_encoding, num_samples):
+    def generate(self, cp_fn, text_description, condition_audio_code, bert_embeddings, num_samples):
+
         mg = self.musicgen
         lm = self.lm
 
@@ -101,21 +86,23 @@ class CondMusicgen(nn.Module):
             max_gen_len = int(chunk_duration * self.frame_rate)
             if prompt_length >= max_gen_len:
                 break
+            #print("current_gen_offset / total ", current_gen_offset, "/", total_gen_len)
             with mg.autocast:
                 condition_audio_code_clip = condition_audio_code[:, :, current_gen_offset:current_gen_offset + max_gen_len + 1]
                 embed_fn = cp_fn(condition_audio_code=condition_audio_code_clip,
                                  max_n_frames=max_gen_len,
                                  mode="inference",
-                                 lyrics_encoding=lyrics_encoding)
+                                 bert_embeddings=bert_embeddings)
+                
+                # Fuse BERT embeddings with the existing embeddings
+                fused_embeddings = self.bert_fusion(torch.cat([embed_fn.adaptor, bert_embeddings.unsqueeze(1).expand(-1, embed_fn.adaptor.size(1), -1)], dim=-1))
 
                 gen_tokens = lm.generate(num_samples=num_samples,
                                          embed_fn=embed_fn,
                                          prompt=prompt_tokens,
                                          conditions=attributes,
-                                         lyrics_encoding=lyrics_encoding,
-                                         callback=None, 
-                                         max_gen_len=max_gen_len, 
-                                         **mg.generation_params)
+                                         fused_embeddings=fused_embeddings,
+                                         callback=None, max_gen_len=max_gen_len, **mg.generation_params)
             if prompt_tokens is None:
                 all_tokens.append(gen_tokens)
             else:
@@ -132,8 +119,9 @@ class CondMusicgen(nn.Module):
     def get_input_embeddings(self):
         return self.lm.emb
 
+
 class EmbFn:
-    def __init__(self, activates, fn, start_layer, max_len, inference=False, skip=None, lyrics_encoding=None):
+    def __init__(self, activates, fn, start_layer, max_len, inference=False, skip=None, bert_embeddings=None):
         self.interval = None
         self.index = -1
         self.adaptor = None
@@ -143,35 +131,31 @@ class EmbFn:
         self.fn = fn
         self.inference = inference
         self.skip = skip
-        self.lyrics_encoding = lyrics_encoding
+        self.bert_embeddings = bert_embeddings
 
     def get_adaptor(self, tag):
         index = self.index
         if index < self.start_layer or tag == "cross":
             return None, None
         i = index - self.start_layer
-        adaptor, gate = self.fn(i, self.activates)        
+        adaptor, gate = self.fn(i, self.activates)
+        if self.bert_embeddings is not None:
+            adaptor = adaptor + self.bert_embeddings.unsqueeze(1)
         return adaptor, gate
 
-    def update_adaptor(self, adaptor):
-        self.adaptor = adaptor
-
     def set_state(self, prefix_q, prefix_k, prefix_v):
-        if not hasattr(self, 'cache'):
-            self.cache = {}
         self.cache[str(self.index)] = [prefix_q, prefix_k, prefix_v]
 
     def get_state(self):
-        if not hasattr(self, 'cache') or str(self.index) not in self.cache:
-            return None, None, None
-        return self.cache[str(self.index)]
+        prefix_q, prefix_k, prefix_v = self.cache[str(self.index)]
+        return prefix_q, prefix_k, prefix_v
 
     def clear_state(self):
-        if hasattr(self, 'cache'):
-            del self.cache
+        self.qkv = {}
         torch.cuda.empty_cache()
 
     def crop(self, tag, x):
+
         if self.interval is not None:
             st, ed = self.interval
             if st >= self.max_len:
@@ -184,13 +168,14 @@ class EmbFn:
         return src
 
     def modify(self, x, dt_x, gate):
+        # return dt_x * gate[:dt_x.shape[-2], :] + x
         return dt_x * gate + x
 
     def set_uncond(self, uncond):
         self.uncond = uncond
 
     def get_uncond(self):
-        return self.uncond if hasattr(self, 'uncond') else None
+        return self.uncond
 
     def set_uncond_cross_attention(self, x):
         self.uncond_cross_att = x
@@ -201,11 +186,15 @@ class EmbFn:
     def get_status(self, tag):
         return tag == "self" and self.index >= self.start_layer
 
+    def update_adaptor(self, adaptor):
+        self.adaptor = adaptor
+
     def set_index(self, index):
         self.index = index
 
     def update_interval(self, st, ed):
         self.interval = [st, ed]
+
 
 class CPTransformerLayer(nn.Module):
     def __init__(self, norm1, norm2, layer_scale_1, dropout1, self_attn, layer_scale_2,
@@ -251,15 +240,19 @@ class CPTransformer(nn.Module):
 
         new_layers = nn.ModuleList()
 
-        self.hidden_dim = latent_dim  # This will be 2048
-        self.cond_dim = latent_dim  # This will be 2048
-        self.num_layers = len(model.layers) - start_layer
-        self.max_n_frames = 1500
+        hidden_dim = 2048
+        cond_dim = latent_dim
+        num_layers = len(model.layers) - start_layer
+        max_n_frames = 1500
+
+        self.bert_processor = nn.Linear(latent_dim, hidden_dim)
 
         self.pos_emb = nn.Parameter(
-            torch.randn(self.num_layers + 1, self.max_n_frames + 1, self.hidden_dim),
+            torch.randn(num_layers + 1, max_n_frames + 1, hidden_dim),
             requires_grad=True)
+        # self.encodec_emb = nn.Linear(hidden_dim, latent_dim, bias=False)
         self.merge_linear = nn.ModuleList()
+        # self.piano_roll_emb = nn.ModuleList()
         for i in range(start_layer, len(model.layers)):
             norm1 = model.layers[i].norm1
             norm2 = model.layers[i].norm2
@@ -283,13 +276,17 @@ class CPTransformer(nn.Module):
                                                  layer_scale_2=layer_scale_2,
                                                  autocast=autocast))
 
-            self.merge_linear.append(nn.Linear(self.cond_dim, self.hidden_dim, bias=False))
+            self.merge_linear.append(nn.Linear(cond_dim, hidden_dim, bias=False))
+            # self.piano_roll_emb.append(nn.Linear(128, latent_dim, bias=False))
 
         self.layers = new_layers
-        self.gates = nn.Parameter(torch.zeros([self.num_layers]))
+        # self.gates = nn.Parameter(torch.zeros([num_layers, max_n_frames, 64]))
+        self.gates = nn.Parameter(torch.zeros([num_layers]))
         freeze(self.layers)
 
+        self.max_n_frames = max_n_frames
         self.start_layer = start_layer
+        self.num_layers = num_layers
         self.stride = stride
 
     def fn(self, i, activates):
@@ -297,29 +294,45 @@ class CPTransformer(nn.Module):
             return None, None
         return activates[i]
 
-    def forward(self, condition_audio_code, max_n_frames, mode, skip=None, lyrics_encoding=None):
+    def forward(self, condition_audio_code, max_n_frames, mode, skip=None, bert_embeddings=None):
         max_n_frames = self.max_n_frames if max_n_frames is None else max_n_frames
 
         sum_code = sum([self.emb_fn["emb"][i](condition_audio_code[:, i]) for i in range(4)])
+
+
         condition_audio_code = sum_code
+        # condition_audio_code = self.encodec_emb(sum_code)
 
         B, T, latent_dim = condition_audio_code.shape  # (batch_size, n_frames, latent_dim)
 
         o = self.pos_emb[0][None, :T].repeat(B, 1, 1)
+        #print(o.shape, T)
 
         outs = []
-        adaptor = None
 
         encoded_condition = condition_audio_code
         for i in range(len(self.layers)):
-            if lyrics_encoding is not None:
-                # Expand lyrics_encoding to match the adaptor shape
-                lyrics_expanded = lyrics_encoding.unsqueeze(1).expand(-1, T, -1)
-                embedding = self.merge_linear[i](encoded_condition) + self.pos_emb[i + 1][None, :T].repeat(B, 1, 1) + lyrics_expanded
+            # We conduct two pass transformer.
+            # The first pass is to get multi-layer representation of the condition_audio_code.
+            # The second pass is to fuse the condition back.
+
+            # 1st pass
+            # encoded_condition = encoded_condition + self.pos_emb[i + 1][None, :T].repeat(B, 1, 1)
+            # _, _, _, encoded_condition = self.layers[i](x=encoded_condition, cond=None)
+
+            if bert_embeddings is not None:
+                processed_bert = self.bert_processor(bert_embeddings)
+                processed_bert = processed_bert.unsqueeze(1).expand(-1, T, -1)
+                embedding = self.merge_linear[i](encoded_condition) + self.pos_emb[i + 1][None, :T].repeat(B, 1, 1) + processed_bert
             else:
                 embedding = self.merge_linear[i](encoded_condition) + self.pos_emb[i + 1][None, :T].repeat(B, 1, 1)
 
-            q, k, v, o = self.layers[i](x=o, cond=embedding)
+            # add positional encoding and send to the transformer
+            embedding = self.merge_linear[i](encoded_condition) + self.pos_emb[i + 1][None, :T].repeat(B, 1, 1)
+            # embedding = (encoded_condition) + self.pos_emb[i + 1][None, :T].repeat(B, 1, 1) + self.merge_linear[i](condition_audio_code)
+
+            # 2nd pass
+            q, k, v, o = self.layers[i](x=o, cond=embedding)  #
             if not mode == "train":
                 outs.append([[torch.cat([q, q], 0),
                               torch.cat([k, k], 0),
@@ -327,15 +340,12 @@ class CPTransformer(nn.Module):
             else:
                 outs.append([[q, k, v], self.gates[i]])
 
-            adaptor = o
-
         emb_fn = EmbFn(activates=outs, fn=self.fn,
                        start_layer=self.start_layer,
                        max_len=max_n_frames,
                        inference=(mode == "inference"),
                        skip=skip,
-                       lyrics_encoding=lyrics_encoding)
-        emb_fn.update_adaptor(adaptor)
+                       bert_embeddings=bert_embeddings)
 
         return emb_fn
 
@@ -354,6 +364,13 @@ class CPTransformer(nn.Module):
 
 class Instructor(nn.Module):
     def __init__(self, sec, num_layers, latent_dim, top_k):
+        '''The MusicGen model with instructor adapter.
+
+        Args:
+            sec: int, duration of the audio in seconds
+            num_layers: int, number of layers of adapter in the transformer
+            latent_dim: int, dimension of the latent space
+        '''
         super().__init__()
         lm = CondMusicgen(sec, top_k=top_k)
         self.peft_model = lm
@@ -370,11 +387,11 @@ class Instructor(nn.Module):
             lora_dropout=0.1,
         )
         
-        # Initialize BERT model and tokenizer
+        # Add BERT model and tokenizer
         self.bert_model = BertModel.from_pretrained('bert-base-uncased')
         self.bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
         
-        # Project BERT embeddings to the model's latent dimension (2048)
+        # Add a linear layer to project BERT embeddings to the model's hidden dimension
         self.bert_projection = nn.Linear(self.bert_model.config.hidden_size, latent_dim)
 
         self.peft_model.lm.transformer = peft.get_peft_model(self.peft_model.lm.transformer, self.text_lora_config)
@@ -391,68 +408,53 @@ class Instructor(nn.Module):
 
     def forward(self, input_code, text_description, condition_audio_code,
                 num_samples=8, mode="train", max_n_frames=None, prompt_tokens=None):
-
         if max_n_frames is None:
             max_n_frames = input_code.shape[-1]
 
         condition_audio_code = torch.cat([condition_audio_code, torch.ones_like(condition_audio_code[:,:, 0:1]) * 2048], dim=-1)
 
-        # Extract lyrics from text_description
-        if isinstance(text_description[0], ConditioningAttributes):
-            instructions = [attr.text['description'] for attr in text_description]
-            lyrics = [attr.text.get('lyrics', '') for attr in text_description]
-        else:
-            instruction_parts = [text.split("Lyrics:", 1) for text in text_description]
-            instructions = [parts[0].strip() for parts in instruction_parts]
-            lyrics = [parts[1].strip() if len(parts) > 1 else "" for parts in instruction_parts]
+        # Split instruction and lyrics
+        instruction_parts = [text.split("Lyrics:", 1) for text in text_description]
+        instructions = [parts[0].strip() for parts in instruction_parts]
+        lyrics = [parts[1].strip() if len(parts) > 1 else "" for parts in instruction_parts]
 
-        # Encode lyrics with BERT
+        # Tokenize and encode the lyrics using BERT
         bert_inputs = self.bert_tokenizer(lyrics, padding=True, truncation=True, return_tensors="pt").to(input_code.device)
-        with torch.no_grad():
-            bert_outputs = self.bert_model(**bert_inputs)
-        bert_embeddings = bert_outputs.last_hidden_state[:, 0, :]  # Use [CLS] token
-        lyrics_encoding = self.bert_projection(bert_embeddings)
+        bert_outputs = self.bert_model(**bert_inputs)
+        bert_embeddings = bert_outputs.last_hidden_state[:, 0, :]  # Use [CLS] token embedding
+        projected_bert_embeddings = self.bert_projection(bert_embeddings)
 
         embed_fn = self.cp_transformer.forward(condition_audio_code=condition_audio_code,
-                                            max_n_frames=max_n_frames,
-                                            mode=mode,
-                                            skip=None,
-                                            lyrics_encoding=lyrics_encoding)
-        
-        if isinstance(text_description[0], str):
-            conditions = [ConditioningAttributes(text={'description': desc, 'lyrics': lyric}) 
-                        for desc, lyric in zip(instructions, lyrics)]
-        else:
-            conditions = text_description
+                                       max_n_frames=max_n_frames,
+                                       mode=mode,
+                                       skip=None,
+                                       bert_embeddings=projected_bert_embeddings)
         
         out = self.peft_model.forward(input_code,
-                                    text_description=conditions,
-                                    embed_fn=embed_fn,
-                                    lyrics_encoding=lyrics_encoding,
-                                    mode=mode,
-                                    total_gen_len=max_n_frames,
-                                    prompt_tokens=prompt_tokens)
+                              text_description=instructions,
+                              embed_fn=embed_fn,
+                              mode=mode,
+                              total_gen_len=max_n_frames,
+                              prompt_tokens=prompt_tokens,
+                              bert_embeddings=projected_bert_embeddings)
         return out
-        
-    def generate(self, text_description, condition_audio_code, num_samples=1):
-        if isinstance(text_description, list) and isinstance(text_description[0], ConditioningAttributes):
-            instructions = [attr.text['description'] for attr in text_description]
-            lyrics = [attr.text.get('lyrics', '') for attr in text_description]
-        else:
-            instruction_parts = [text.split("Lyrics:", 1) for text in text_description]
-            instructions = [parts[0].strip() for parts in instruction_parts]
-            lyrics = [parts[1].strip() if len(parts) > 1 else "" for parts in instruction_parts]
 
-        # Encode lyrics with BERT
+    def generate(self, text_description, condition_audio_code,
+                 num_samples=1):
+        # Split instruction and lyrics
+        instruction_parts = [text.split("Lyrics:", 1) for text in text_description]
+        instructions = [parts[0].strip() for parts in instruction_parts]
+        lyrics = [parts[1].strip() if len(parts) > 1 else "" for parts in instruction_parts]
+
+        # Tokenize and encode the lyrics using BERT
         bert_inputs = self.bert_tokenizer(lyrics, padding=True, truncation=True, return_tensors="pt").to(next(self.parameters()).device)
-        with torch.no_grad():
-            bert_outputs = self.bert_model(**bert_inputs)
-        bert_embeddings = bert_outputs.last_hidden_state[:, 0, :]  # Use [CLS] token
-        lyrics_encoding = self.bert_projection(bert_embeddings)
+        bert_outputs = self.bert_model(**bert_inputs)
+        bert_embeddings = bert_outputs.last_hidden_state[:, 0, :]  # Use [CLS] token embedding
+        projected_bert_embeddings = self.bert_projection(bert_embeddings)
 
         out = self.peft_model.generate(cp_fn=self.cp_transformer,
                                        text_description=instructions,
                                        condition_audio_code=condition_audio_code,
                                        num_samples=num_samples,
-                                       lyrics_encoding=lyrics_encoding)
+                                       bert_embeddings=projected_bert_embeddings)
         return out
